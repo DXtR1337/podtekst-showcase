@@ -1,7 +1,5 @@
 <p align="center">
-  <b>Pod</b>Teks<b>T</b>
-  <br/>
-  <sub>AI-Powered Conversation Analyzer</sub>
+  <img src="podtekst_logo.svg" alt="PodTeksT" width="380" />
 </p>
 
 <p align="center">
