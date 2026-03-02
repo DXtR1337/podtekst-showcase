@@ -1,0 +1,561 @@
+'use client';
+
+import { useState, useCallback, useMemo, useEffect, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { ArrowRight, RotateCcw, ChevronDown, Upload, Bot, AlertTriangle } from 'lucide-react';
+import { DropZone } from '@/components/upload/DropZone';
+import { ProcessingState } from '@/components/upload/ProcessingState';
+import DiscordImport from '@/components/upload/DiscordImport';
+import { Button } from '@/components/ui/button';
+import { parseMessengerJSON, mergeMessengerFiles } from '@/lib/parsers/messenger';
+import { parseWhatsAppText } from '@/lib/parsers/whatsapp';
+// Instagram parser available — same Meta format as Messenger, auto-detected
+// import { parseInstagramJSON, mergeInstagramFiles } from '@/lib/parsers/instagram';
+import { parseTelegramJSON } from '@/lib/parsers/telegram';
+import { detectFormat } from '@/lib/parsers/detect';
+import { computeQuantitativeAnalysis } from '@/lib/analysis/quantitative';
+import { computeConversationFingerprint } from '@/lib/analysis/fingerprint';
+import { saveAnalysis, generateId } from '@/lib/utils';
+import type { StoredAnalysis, RelationshipContext } from '@/lib/analysis/types';
+import { trackEvent } from '@/lib/analytics/events';
+
+type ImportMode = 'file' | 'discord';
+
+type Stage = 'idle' | 'parsing' | 'analyzing' | 'saving' | 'complete';
+
+function readFileAsText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+      } else {
+        reject(new Error(`Failed to read file "${file.name}" as text.`));
+      }
+    };
+    reader.onerror = () => {
+      reject(new Error(`Error reading file "${file.name}": ${reader.error?.message ?? 'unknown error'}`));
+    };
+    reader.readAsText(file);
+  });
+}
+
+const RELATIONSHIP_OPTIONS: { value: RelationshipContext; emoji: string; label: string }[] = [
+  { value: 'romantic', emoji: '\u{1F495}', label: 'Związek' },
+  { value: 'friendship', emoji: '\u{1F46B}', label: 'Przyjaźń' },
+  { value: 'colleague', emoji: '\u{1F4BC}', label: 'Kolega' },
+  { value: 'professional', emoji: '\u{1F3E2}', label: 'Praca' },
+  { value: 'family', emoji: '\u{1F468}\u200D\u{1F469}\u200D\u{1F466}', label: 'Rodzina' },
+  { value: 'eks', emoji: '\u{1F494}', label: 'Ex-Partner' },
+  { value: 'other', emoji: '\u2753', label: 'Inne' },
+];
+
+/**
+ * Read the ?channel= query param inside a Suspense boundary so the rest
+ * of the page (including DropZone) hydrates immediately and is interactive.
+ */
+function ChannelParamReader({ onChannel }: { onChannel: (id: string | null) => void }) {
+  const searchParams = useSearchParams();
+  const channel = searchParams.get('channel');
+  useEffect(() => {
+    onChannel(channel);
+  }, [channel, onChannel]);
+  return null;
+}
+
+export default function NewAnalysisPage() {
+  const [autoChannelId, setAutoChannelId] = useState<string | null>(null);
+  const handleChannel = useCallback((id: string | null) => setAutoChannelId(id), []);
+
+  return (
+    <>
+      <Suspense>
+        <ChannelParamReader onChannel={handleChannel} />
+      </Suspense>
+      <NewAnalysisContent autoChannelId={autoChannelId} />
+    </>
+  );
+}
+
+function NewAnalysisContent({ autoChannelId }: { autoChannelId: string | null }) {
+  const router = useRouter();
+  const [importMode, setImportMode] = useState<ImportMode>('file');
+  const [files, setFiles] = useState<File[]>([]);
+  const [relationshipType, setRelationshipType] = useState<RelationshipContext | null>(null);
+  const [stage, setStage] = useState<Stage>('idle');
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [progress, setProgress] = useState<{ current: number; total: number } | undefined>(undefined);
+  const [showInstructions, setShowInstructions] = useState<boolean>(false);
+
+  // Switch to discord mode when ?channel= param is detected
+  useEffect(() => {
+    if (autoChannelId) setImportMode('discord');
+  }, [autoChannelId]);
+
+  const handleFilesSelected = useCallback((selectedFiles: File[]) => {
+    setFiles(selectedFiles);
+    setError(undefined);
+    setStage('idle');
+  }, []);
+
+  const handleAnalyze = useCallback(async () => {
+    if (files.length === 0) return;
+
+    setError(undefined);
+    setStage('parsing');
+    setProgress(undefined);
+
+    try {
+      // Stage 1: Read and parse files
+      setProgress({ current: 0, total: files.length });
+
+      // Detect file type from first file
+      const hasTxt = files.some(f => f.name.endsWith('.txt'));
+      const hasJson = files.some(f => f.name.endsWith('.json'));
+
+      if (hasTxt && hasJson) {
+        throw new Error('Nie można mieszać plików JSON i TXT. Wybierz jeden format.');
+      }
+
+      let conversation: import('@/lib/parsers/types').ParsedConversation;
+
+      if (hasTxt) {
+        // WhatsApp: read all .txt files and concatenate
+        let fullText = '';
+        for (let i = 0; i < files.length; i++) {
+          const text = await readFileAsText(files[i]);
+          fullText += (fullText ? '\n' : '') + text;
+          setProgress({ current: i + 1, total: files.length });
+        }
+        conversation = parseWhatsAppText(fullText);
+      } else {
+        // JSON formats: Messenger, Instagram, or Telegram — auto-detect
+        const jsonDataArray: unknown[] = [];
+
+        for (let i = 0; i < files.length; i++) {
+          const text = await readFileAsText(files[i]);
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(text);
+          } catch {
+            throw new Error(
+              `"${files[i].name}" nie jest poprawnym plikiem JSON. Upewnij się, że przesyłasz eksport rozmowy.`
+            );
+          }
+          jsonDataArray.push(parsed);
+          setProgress({ current: i + 1, total: files.length });
+        }
+
+        // Auto-detect format from first file
+        const format = detectFormat(files[0].name, jsonDataArray[0]);
+
+        if (format === 'telegram') {
+          if (jsonDataArray.length > 1) {
+            throw new Error('Telegram: przesyłaj jeden plik result.json na raz.');
+          }
+          conversation = parseTelegramJSON(jsonDataArray[0]);
+        } else if (format === 'messenger' || format === 'instagram') {
+          // Messenger and Instagram use the same Meta export format
+          conversation =
+            jsonDataArray.length === 1
+              ? parseMessengerJSON(jsonDataArray[0])
+              : mergeMessengerFiles(jsonDataArray);
+        } else {
+          throw new Error(
+            'Nierozpoznany format pliku. Obsługiwane: Messenger (.json), WhatsApp (.txt), Instagram (.json), Telegram (.json).'
+          );
+        }
+      }
+
+      // Validate minimum message count
+      if (conversation.metadata.totalMessages < 100) {
+        throw new Error(
+          `Ta rozmowa ma tylko ${conversation.metadata.totalMessages} wiadomości. Minimum 100 wiadomości jest wymagane do analizy.`
+        );
+      }
+
+      // Stage 2: Compute quantitative analysis
+      setStage('analyzing');
+      setProgress(undefined);
+
+      // Yield to the event loop so the UI can update before heavy computation
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const quantitative = computeQuantitativeAnalysis(conversation);
+
+      // Compute conversation fingerprint for longitudinal tracking
+      const firstTimestamp = conversation.messages[0]?.timestamp ?? Date.now();
+      const participantNames = conversation.participants.map(p => p.name);
+      const conversationFingerprint = await computeConversationFingerprint(
+        participantNames,
+        conversation.platform,
+        firstTimestamp,
+      );
+
+      // Stage 3: Save results
+      setStage('saving');
+
+      const id = generateId();
+      const analysis: StoredAnalysis = {
+        id,
+        title: conversation.title,
+        createdAt: Date.now(),
+        relationshipContext: relationshipType ?? undefined,
+        conversation,
+        quantitative,
+        conversationFingerprint,
+      };
+
+      await saveAnalysis(analysis);
+
+      trackEvent({
+        name: 'upload_complete',
+        params: {
+          platform: conversation.platform,
+          messageCount: conversation.metadata.totalMessages,
+          durationDays: Math.round(
+            ((conversation.metadata.dateRange.end ?? Date.now()) - conversation.metadata.dateRange.start) /
+              (1000 * 60 * 60 * 24),
+          ),
+        },
+      });
+
+      // Stage 4: Complete and redirect
+      setStage('complete');
+
+      // Brief pause to show the completion state before navigating
+      await new Promise((resolve) => setTimeout(resolve, 600));
+
+      sessionStorage.setItem('podtekst-celebrate-' + id, '1');
+      router.push(`/analysis/${id}`);
+    } catch (thrown: unknown) {
+      const message =
+        thrown instanceof Error
+          ? thrown.message
+          : 'Wystąpił nieoczekiwany błąd podczas analizy. Spróbuj ponownie.';
+      setError(message);
+    }
+  }, [files, relationshipType, router]);
+
+  const handleRetry = useCallback(() => {
+    setError(undefined);
+    setStage('idle');
+    setProgress(undefined);
+  }, []);
+
+  const isProcessing = stage !== 'idle';
+  const showProcessingState = stage !== 'idle';
+  const processingStage = stage === 'idle' ? 'parsing' : stage;
+
+  const isKioskMode = !!autoChannelId;
+
+  // Warn when a single message_N.json is uploaded — likely missing other parts
+  const messengerFileWarning = useMemo(() => {
+    if (files.length !== 1 || isProcessing) return null;
+    const name = files[0].name;
+    if (/^message_\d+\.json$/i.test(name)) {
+      return 'Wygląda na to, że masz więcej plików (message_1.json, message_2.json...). Dodaj wszystkie pliki lub użyj przycisku "Wybierz cały folder", aby uzyskać pełną analizę.';
+    }
+    return null;
+  }, [files, isProcessing]);
+
+  const currentStep = isProcessing ? 3 : files.length > 0 ? 2 : 1;
+
+  return (
+    <div className="mx-auto w-full max-w-[640px] px-4 py-12">
+      {/* Header */}
+      <div className="mb-8 space-y-2">
+        <h1 className="font-display text-2xl font-semibold tracking-tight text-foreground">
+          {isKioskMode ? 'Analiza kanału Discord' : 'Nowa analiza'}
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          {isKioskMode
+            ? 'Automatyczne pobieranie i analiza wiadomości z kanału'
+            : 'Wgraj eksport rozmowy lub pobierz wiadomości z Discorda'}
+        </p>
+      </div>
+
+      {/* Step indicator — hidden in kiosk and discord modes */}
+      {!isKioskMode && importMode === 'file' && (
+        <div className="mb-8 flex items-center gap-2" role="progressbar" aria-valuenow={currentStep} aria-valuemin={1} aria-valuemax={3} aria-label="Postep analizy">
+          {[
+            { num: 1, label: 'Przeslij plik' },
+            { num: 2, label: 'Konfiguracja' },
+            { num: 3, label: 'Analiza' },
+          ].map((step, i) => (
+            <div key={step.num} className="flex items-center gap-2 flex-1">
+              <div className={`flex items-center gap-2 ${step.num <= currentStep ? 'text-foreground' : 'text-muted-foreground/50'}`}>
+                <span className={`flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
+                  step.num < currentStep ? 'bg-success text-white' :
+                  step.num === currentStep ? 'bg-primary text-white' :
+                  'bg-card border border-border'
+                }`}>
+                  {step.num < currentStep ? '\u2713' : step.num}
+                </span>
+                <span className="text-xs font-medium whitespace-nowrap">{step.label}</span>
+              </div>
+              {i < 2 && <div className={`h-px flex-1 ${step.num < currentStep ? 'bg-success/50' : 'bg-border'}`} />}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Import mode tabs — hidden in kiosk mode */}
+      {!isKioskMode && (
+        <div className="mb-6 flex gap-1 rounded-lg border border-border bg-card/50 p-1">
+          <button
+            type="button"
+            onClick={() => setImportMode('file')}
+            className={`flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+              importMode === 'file'
+                ? 'bg-primary/10 text-primary'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <Upload className="size-4" />
+            Plik eksportu
+          </button>
+          <button
+            type="button"
+            onClick={() => setImportMode('discord')}
+            className={`flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+              importMode === 'discord'
+                ? 'bg-primary/10 text-primary'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <Bot className="size-4" />
+            Discord Bot
+          </button>
+        </div>
+      )}
+
+      {/* Privacy notice — shown above upload area */}
+      {!isKioskMode && (
+        <div className="mb-4 rounded-md border border-border bg-card/50 px-4 py-2.5">
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {importMode === 'file'
+              ? '\u{1F512} Twoje wiadomości są przetwarzane lokalnie w przeglądarce. Żadne dane nie trafiają na serwer.'
+              : '\u{1F512} Token bota jest używany jednorazowo i nie jest nigdzie zapisywany.'}
+          </p>
+        </div>
+      )}
+
+      {/* Upload section */}
+      <div className="space-y-6">
+        {importMode === 'file' && (
+        <DropZone
+          onFilesSelected={handleFilesSelected}
+          disabled={isProcessing}
+        />
+        )}
+
+        {/* Incomplete Messenger upload warning */}
+        {importMode === 'file' && messengerFileWarning && (
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2.5 text-xs text-amber-200/70">
+            <AlertTriangle className="size-4 shrink-0 mt-0.5 text-amber-500" />
+            <span>{messengerFileWarning}</span>
+          </div>
+        )}
+
+        {/* Relationship type selector — shared between modes, hidden in kiosk */}
+        {!isKioskMode && ((importMode === 'file' && files.length > 0 && !isProcessing) || importMode === 'discord') && (
+          <div className="space-y-3">
+            <label className="text-sm font-medium text-muted-foreground">
+              Typ relacji <span className="text-text-muted">(opcjonalne)</span>
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {RELATIONSHIP_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setRelationshipType(relationshipType === opt.value ? null : opt.value)}
+                  className={`rounded-full border px-3 py-1.5 text-sm transition-colors ${
+                    relationshipType === opt.value
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border text-muted-foreground hover:border-border-hover hover:text-foreground'
+                  }`}
+                >
+                  {opt.emoji} {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* File mode: Analyze button + processing */}
+        {importMode === 'file' && files.length > 0 && !isProcessing && (
+          <div className="flex justify-end">
+            <Button
+              onClick={handleAnalyze}
+              size="lg"
+              className="gap-2"
+            >
+              Analizuj <span className="text-xs opacity-70">(~30s)</span>
+              <ArrowRight className="size-4" />
+            </Button>
+          </div>
+        )}
+
+        {importMode === 'file' && showProcessingState && (
+          <ProcessingState
+            stage={processingStage}
+            progress={progress}
+            error={error}
+          />
+        )}
+
+        {importMode === 'file' && error && (
+          <div className="flex justify-end">
+            <Button
+              onClick={handleRetry}
+              variant="outline"
+              size="default"
+              className="gap-2"
+            >
+              <RotateCcw className="size-4" />
+              Spróbuj ponownie
+            </Button>
+          </div>
+        )}
+
+        {/* Discord mode */}
+        {importMode === 'discord' && (
+          <DiscordImport relationshipType={relationshipType} autoChannelId={autoChannelId} />
+        )}
+      </div>
+
+      {/* (Privacy notice moved above upload area) */}
+
+      {/* Export instructions — file mode only, hidden in kiosk mode */}
+      {!isKioskMode && importMode === 'file' && <div className="mt-3 rounded-md border border-border bg-card/50 px-4 py-3">
+        <button
+          type="button"
+          className="flex w-full cursor-pointer items-center justify-between"
+          onClick={() => setShowInstructions((prev) => !prev)}
+          aria-expanded={showInstructions}
+          aria-controls="export-instructions"
+        >
+          <span className="text-xs font-medium text-muted-foreground">
+            Jak wyeksportować rozmowę?
+          </span>
+          <ChevronDown
+            className="size-4 text-muted-foreground transition-transform duration-200"
+            style={{ transform: showInstructions ? 'rotate(180deg)' : 'rotate(0deg)' }}
+          />
+        </button>
+        {showInstructions && (
+          <div id="export-instructions">
+            <p className="mt-3 mb-2 text-xs font-medium text-foreground/80">Messenger (przez aplikację):</p>
+            <ol className="list-decimal pl-5 text-xs leading-relaxed text-muted-foreground">
+              <li>
+                Otwórz Messengera i przejdź do{' '}
+                <strong className="text-foreground/80">Ustawienia</strong> (ikona zębatki)
+              </li>
+              <li>
+                Kliknij{' '}
+                <strong className="text-foreground/80">Prywatność i bezpieczeństwo</strong>
+              </li>
+              <li>
+                Wybierz{' '}
+                <strong className="text-foreground/80">W pełni szyfrowane czaty</strong>
+              </li>
+              <li>
+                Otwórz{' '}
+                <strong className="text-foreground/80">Pamięć wiadomości</strong>
+              </li>
+              <li>
+                Na dole kliknij{' '}
+                <strong className="text-foreground/80">Pobierz dane z pamięci wiadomości</strong>
+              </li>
+              <li>
+                Pobierz archiwum i rozpakuj — pliki JSON znajdziesz w folderze{' '}
+                <code className="rounded bg-card px-1 py-0.5 font-mono text-foreground/80">
+                  messages/inbox/[nazwa_rozmowy]/
+                </code>
+              </li>
+            </ol>
+            <div className="mt-3 border-t border-border pt-3">
+              <p className="mb-2 text-xs font-medium text-foreground/80">Messenger (przez Facebook):</p>
+              <ol className="list-decimal pl-5 text-xs leading-relaxed text-muted-foreground">
+                <li>
+                  Otwórz Facebooka i przejdź do{' '}
+                  <strong className="text-foreground/80">Ustawienia i prywatność → Ustawienia</strong>
+                </li>
+                <li>
+                  Kliknij{' '}
+                  <strong className="text-foreground/80">Twoje informacje</strong> →{' '}
+                  <strong className="text-foreground/80">Pobierz swoje informacje</strong>
+                </li>
+                <li>
+                  Zaznacz tylko{' '}
+                  <strong className="text-foreground/80">Wiadomości</strong> i wybierz format{' '}
+                  <strong className="text-foreground/80">JSON</strong>
+                </li>
+                <li>
+                  Kliknij{' '}
+                  <strong className="text-foreground/80">Utwórz plik</strong> i poczekaj na powiadomienie
+                </li>
+                <li>
+                  Pobierz archiwum i rozpakuj — pliki JSON znajdziesz w folderze{' '}
+                  <code className="rounded bg-card px-1 py-0.5 font-mono text-foreground/80">
+                    messages/inbox/[nazwa_rozmowy]/
+                  </code>
+                </li>
+              </ol>
+            </div>
+            <div className="mt-3 border-t border-border pt-3">
+              <p className="mb-2 text-xs font-medium text-foreground/80">Instagram:</p>
+              <ol className="list-decimal pl-5 text-xs leading-relaxed text-muted-foreground">
+                <li>
+                  Otwórz Instagram i przejdź do{' '}
+                  <strong className="text-foreground/80">Ustawienia → Twoje działania → Pobierz swoje informacje</strong>
+                </li>
+                <li>
+                  Wybierz{' '}
+                  <strong className="text-foreground/80">Wiadomości</strong> i format{' '}
+                  <strong className="text-foreground/80">JSON</strong>
+                </li>
+                <li>
+                  Pobierz archiwum i rozpakuj — pliki JSON znajdziesz w folderze{' '}
+                  <code className="rounded bg-card px-1 py-0.5 font-mono text-foreground/80">
+                    messages/inbox/[nazwa_rozmowy]/
+                  </code>
+                </li>
+              </ol>
+            </div>
+            <div className="mt-3 border-t border-border pt-3">
+              <p className="mb-2 text-xs font-medium text-foreground/80">Telegram:</p>
+              <ol className="list-decimal pl-5 text-xs leading-relaxed text-muted-foreground">
+                <li>
+                  Otwórz <strong className="text-foreground/80">Telegram Desktop</strong>
+                </li>
+                <li>
+                  Przejdź do{' '}
+                  <strong className="text-foreground/80">Ustawienia → Zaawansowane → Eksportuj dane z Telegrama</strong>
+                </li>
+                <li>
+                  Zaznacz rozmowy do eksportu, wybierz format{' '}
+                  <strong className="text-foreground/80">Machine-readable JSON</strong>
+                </li>
+                <li>
+                  Wgraj plik{' '}
+                  <code className="rounded bg-card px-1 py-0.5 font-mono text-foreground/80">result.json</code>
+                </li>
+              </ol>
+            </div>
+            <div className="mt-3 border-t border-border pt-3">
+              <p className="mb-2 text-xs font-medium text-foreground/80">WhatsApp:</p>
+              <ol className="list-decimal pl-5 text-xs leading-relaxed text-muted-foreground">
+                <li>Otwórz rozmowę w WhatsAppie</li>
+                <li>Kliknij <strong className="text-foreground/80">&#x22EE;</strong> → <strong className="text-foreground/80">Więcej</strong> → <strong className="text-foreground/80">Eksportuj czat</strong></li>
+                <li>Wybierz <strong className="text-foreground/80">Bez multimediów</strong></li>
+                <li>Zapisz plik .txt i wgraj go tutaj</li>
+              </ol>
+            </div>
+          </div>
+        )}
+      </div>}
+    </div>
+  );
+}

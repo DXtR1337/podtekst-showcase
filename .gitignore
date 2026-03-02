@@ -1,0 +1,151 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# personal / sensitive data
+/messages/
+/cv-bzcommerce/
+
+# design mockups (not source code)
+dashboard.html
+dashboard-styles.css
+dashboard-charts.js
+/design-v2/
+
+# screenshots
+*.png
+!public/**/*.png
+
+# misc artifacts
+nul
+setup.sh
+.playwright-mcp/
+
+# firebase cache
+.firebase/
+
+# claude config
+.claude/
+
+# misc binaries
+vrf_decompiler.zip
+
+# scripts (processing tools, not source)
+scripts/
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# large data files & temp artifacts
+sada/
+generacje/
+claudeobsidian/
+MOCK/
+*.mp4
+!public/videos/**/*.mp4
+*.bz2
+*.7z
+_tmp_*
+document_pdf.pdf
+tinder-phone.html
+tinder.css
+compass_artifact_*.md
+AUDIT-*.md
+*-PLAN.md
+*-REVIEW-*.md
+GAP-ANALYSIS.md
+ROADMAP.md
+PSYCHOMETRIC_AUDIT.md
+
+# === REPO CLEANUP 2026-03-02 ===
+
+# LaTeX build artifacts
+*.aux
+*.out
+*.toc
+*.idx
+*.ilg
+*.ind
+*.lot
+*.lof
+
+# Generated PDFs (keep .tex sources)
+*.pdf
+
+# Dev scripts / one-off helpers
+_*.mjs
+_*.js
+apply_*.js
+fix.js
+
+# Reference photos / design assets (large binary)
+/photos/
+/docs/nowe ikonki/
+
+# Game files (???)
+*.vpk
+/rainbow_outline_addon/
+
+# Firebase (legacy)
+firebase-debug.log
+.firebaserc
+firebase.json
+
+# Old audit reports & documentation
+/audit/
+/audit-reports/
+/antigravity1/
+/auditantigravity/
+
+# Spline scenes (root level dupes — keep public/ copies)
+/scene*.splinecode
+
+# Cloudflare worker (infra — private)
+/cloudflare-worker/
+
+# Temp/personal/misc files
+/spline-3d-integration-skill/
+scid-ii-screener*
+_env_vars.txt
+_guild_cmd.json
+podtekst_logo.svg
+DOKUMENTACJA_*.tex
+DOKUMENTACJA_*.md
+DOKUMENTACJA_*.pdf
+POLISH_PLAN.md
+Usersmicha*

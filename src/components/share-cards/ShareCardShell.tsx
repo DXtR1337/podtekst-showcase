@@ -1,0 +1,202 @@
+'use client';
+
+import { useRef, useState, useEffect } from 'react';
+import type { RefObject, ReactNode } from 'react';
+
+interface ShareCardShellProps {
+  children: ReactNode;
+  cardRef: RefObject<HTMLDivElement | null>;
+  /** Optional gradient override — defaults to deep blue/purple */
+  gradient?: string;
+}
+
+export default function ShareCardShell({
+  children,
+  cardRef,
+  gradient = 'linear-gradient(160deg, #0a0a1a 0%, #0d0b1e 25%, #12082a 50%, #0a0e1f 75%, #080818 100%)',
+}: ShareCardShellProps) {
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(1);
+
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+
+    const updateScale = () => {
+      const containerWidth = wrapper.clientWidth;
+      setScale(Math.max(0.85, Math.min(1, (containerWidth - 16) / 380)));
+    };
+
+    updateScale();
+
+    const observer = new ResizeObserver(updateScale);
+    observer.observe(wrapper);
+
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div
+      ref={wrapperRef}
+      style={{
+        display: 'flex',
+        justifyContent: 'center',
+        width: '100%',
+        minHeight: Math.ceil(640 * scale),
+      }}
+    >
+      <div
+        ref={cardRef}
+        style={{
+          width: 'min(360px, 100vw - 2rem)',
+          minHeight: 640,
+          background: gradient,
+          borderRadius: 20,
+          padding: 28,
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+          position: 'relative',
+          transform: `scale(${scale})`,
+          transformOrigin: 'top center',
+          userSelect: 'none',
+          WebkitUserSelect: 'none',
+        }}
+      >
+        {/* Ambient glow blobs — rendered behind content */}
+        <div
+          style={{
+            position: 'absolute',
+            top: -40,
+            right: -40,
+            width: 200,
+            height: 200,
+            borderRadius: '50%',
+            background: 'radial-gradient(circle, rgba(99,102,241,0.15) 0%, transparent 70%)',
+            filter: 'blur(40px)',
+            pointerEvents: 'none',
+          }}
+        />
+        <div
+          style={{
+            position: 'absolute',
+            bottom: -30,
+            left: -30,
+            width: 180,
+            height: 180,
+            borderRadius: '50%',
+            background: 'radial-gradient(circle, rgba(168,85,247,0.12) 0%, transparent 70%)',
+            filter: 'blur(40px)',
+            pointerEvents: 'none',
+          }}
+        />
+
+        {/* Header — glassmorphism pill */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginBottom: 20,
+            flexShrink: 0,
+            position: 'relative',
+            zIndex: 1,
+          }}
+        >
+          <span
+            style={{
+              fontFamily: 'var(--font-syne)',
+              fontWeight: 800,
+              fontSize: '1rem',
+              display: 'inline-flex',
+              alignItems: 'baseline',
+            }}
+          >
+            {/* P with chat bubble cutout */}
+            <svg viewBox="0 0 310 370" fill="none" aria-hidden="true" style={{ height: '0.85em', width: 'auto', display: 'inline-block', verticalAlign: 'baseline', marginBottom: '-0.03em' }}>
+              <defs>
+                <linearGradient id="cardHeaderP" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0%" stopColor="#818cf8" />
+                  <stop offset="100%" stopColor="#c084fc" />
+                </linearGradient>
+                <mask id="cardHeaderPm">
+                  <rect width="310" height="370" fill="white" />
+                  <path d="M 100,40 Q 100,30 112,30 L 230,30 Q 242,30 242,42 L 242,125 Q 242,137 230,137 L 165,137 L 145,165 L 140,137 L 112,137 Q 100,137 100,125 Z" fill="black" />
+                </mask>
+              </defs>
+              <g mask="url(#cardHeaderPm)">
+                <path d="M 0,0 L 240,0 Q 310,0 310,70 L 310,130 Q 310,200 240,200 L 85,200 L 85,370 L 0,370 Z" fill="url(#cardHeaderP)" />
+              </g>
+            </svg>
+            <span style={{ color: '#a78bfa' }}>odTeksT</span>
+          </span>
+          <span
+            style={{
+              fontFamily: 'var(--font-geist-mono)',
+              fontSize: '0.63rem',
+              fontWeight: 600,
+              letterSpacing: '0.06em',
+              color: 'rgba(255,255,255,0.5)',
+              background: 'rgba(255,255,255,0.08)',
+              backdropFilter: 'blur(8px)',
+              borderRadius: 9999,
+              padding: '3px 12px',
+              border: '1px solid rgba(255,255,255,0.06)',
+            }}
+          >
+            2026
+          </span>
+        </div>
+
+        {/* Content */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, position: 'relative', zIndex: 1 }}>
+          {children}
+        </div>
+
+        {/* Footer — subtle watermark */}
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: 3,
+            paddingTop: 14,
+            flexShrink: 0,
+            position: 'relative',
+            zIndex: 1,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <svg width={18} height={12} viewBox="0 0 580 370" fill="none" aria-hidden="true" style={{ opacity: 0.4 }}>
+              <defs>
+                <linearGradient id="ptcard" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0%" stopColor="#818cf8" />
+                  <stop offset="100%" stopColor="#c084fc" />
+                </linearGradient>
+                <mask id="ptcardm">
+                  <rect width="580" height="370" fill="white" />
+                  <path d="M 100,40 Q 100,30 112,30 L 230,30 Q 242,30 242,42 L 242,125 Q 242,137 230,137 L 165,137 L 145,165 L 140,137 L 112,137 Q 100,137 100,125 Z" fill="black" />
+                </mask>
+              </defs>
+              <g mask="url(#ptcardm)">
+                <path d="M 0,0 L 240,0 Q 310,0 310,70 L 310,130 Q 310,200 240,200 L 85,200 L 85,370 L 0,370 Z" fill="url(#ptcard)" />
+              </g>
+              <path d="M 330,0 L 580,0 L 580,85 L 497,85 L 497,370 L 413,370 L 413,85 L 330,85 Z" fill="url(#ptcard)" />
+            </svg>
+            <span
+              style={{
+                fontFamily: 'var(--font-geist-mono)',
+                fontSize: '0.63rem',
+                letterSpacing: '0.12em',
+                textTransform: 'uppercase' as const,
+                color: 'rgba(255,255,255,0.4)',
+              }}
+            >
+              podtekst.app
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

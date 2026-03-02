@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /dashboard
+Allow: /analysis/new
+Disallow: /analysis/
+
+Sitemap: https://podtekst.app/sitemap.xml
